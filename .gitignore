@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+data/raw/
+data/processed/
+*.csv
+*.npy
+*.npz
+*.pt
+*.pth
+.DS_Store
