@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sit-fuse-rtrbm"
+version = "0.1.0"
+description = "RTRBM/RTDBN development workspace (Learnergy extension + SIT-FUSE integration)"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "tqdm",
+    "learnergy>=1.2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -10,3 +10,5 @@ data/processed/
 *.pt
 *.pth
 .DS_Store
+*.egg-info/
+venv/
