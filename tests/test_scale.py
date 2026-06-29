@@ -7,6 +7,9 @@ from sit_fuse_rtrbm.utils.scale import (
     fit_minmax_scale, apply_minmax_scale, minmax_scale
 )
 
+import logging
+logging.disable(logging.CRITICAL)
+
 
 def test_basic_scaling_range():
     """Scaled training data should land in [0, 1], with min->0, max->1."""

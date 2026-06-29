@@ -21,8 +21,8 @@ class SFTemporalDataset(torch.utils.data.Dataset):
         pass
 
     def init_from_array(self, data, targets, seq_len, scaler=None,
-                        transform=None, subset_training=-1,
-                        stratify_data=None, do_shuffle=True):
+                         transform=None, subset_training=-1,
+                         stratify_data=None, do_shuffle=True):
         self.data = data
         self.targets = targets
         self.seq_len = seq_len
@@ -36,18 +36,18 @@ class SFTemporalDataset(torch.utils.data.Dataset):
         self.__make_sequences__()
 
     def read_data_preprocessed(self, data_filename, indices_filename,
-                               seq_len, scaler=None, subset_training=-1,
-                               stratify_data=None, do_shuffle=True):
+                                seq_len, scaler=None, subset_training=-1,
+                                stratify_data=None, do_shuffle=True):
         data = np.load(data_filename, allow_pickle=True)
         targets = np.load(indices_filename, allow_pickle=True)
         self.init_from_array(data, targets, seq_len, scaler=scaler,
-                             subset_training=subset_training,
-                             stratify_data=stratify_data,
-                             do_shuffle=do_shuffle)
+                              subset_training=subset_training,
+                              stratify_data=stratify_data,
+                              do_shuffle=do_shuffle)
 
     def read_and_preprocess_data(self, filenames, seq_len, scaler=None,
-                                 transform=None, subset_training=-1,
-                                 stratify_data=None, do_shuffle=True):
+                                  transform=None, subset_training=-1,
+                                  stratify_data=None, do_shuffle=True):
         """
         Multi-trial entry point. Mirrors SFDataset.read_and_preprocess_data's
         `filenames`-list convention (sf_dataset.py): each file is one
@@ -117,8 +117,51 @@ class SFTemporalDataset(torch.utils.data.Dataset):
             sequences = sequences[order]
             seq_targets = seq_targets[order]
 
+        sequences, seq_targets = self.__subset_sequences__(sequences, seq_targets)
+
         self.data_full = sequences
         self.targets_full = seq_targets
+
+    def __subset_sequences__(self, sequences, seq_targets):
+        """
+        Internal. Applies subset_training / stratify_data to an already-
+        built pool of sequences, shared by both the single-trial and
+        multi-trial paths.
+
+        RESOLVED (per Nick, meeting 2026-06-29): plain random subsetting
+        is unambiguous for sequences -- "take N random sequences" means
+        the same thing whether a sample is a pixel or a sequence -- so
+        it's implemented below.
+
+        STILL DEFERRED: sf_dataset.py's k-means-based stratification
+        (__stratify_k_means__) is NOT ported. It's genuinely unclear what
+        "a representative subset" should mean for sequences -- cluster on
+        the raw flattened sequence? On some summary statistic? Per-trial
+        or pooled across all trials? Raises NotImplementedError if
+        requested, rather than guessing at a definition.
+        """
+        if self.subset_training is None or self.subset_training <= 0:
+            return sequences, seq_targets
+
+        if self.subset_training >= len(sequences):
+            # Nothing to subset -- requested size already covers (or
+            # exceeds) what we have.
+            return sequences, seq_targets
+
+        if self.stratify_data is not None and self.stratify_data.get("kmeans"):
+            raise NotImplementedError(
+                "K-means-based stratification is not yet defined for "
+                "sequence data (unclear what 'representative subset' "
+                "means here -- cluster on raw sequence? summary stats? "
+                "per-trial? pooled?). Confirm approach with Nick before "
+                "implementing. Plain random subset_training (without "
+                "stratify_data) is supported."
+            )
+
+        indices = np.random.choice(
+            len(sequences), size=self.subset_training, replace=False
+        )
+        return sequences[indices], seq_targets[indices]
 
     @staticmethod
     def __window_single_trial__(data, targets, seq_len):
@@ -133,7 +176,7 @@ class SFTemporalDataset(torch.utils.data.Dataset):
         n_sequences = n_timesteps - seq_len + 1
 
         sequences = np.zeros((n_sequences, seq_len, n_features),
-                             dtype=np.float32)
+                              dtype=np.float32)
         seq_targets = []
 
         for i in range(n_sequences):
@@ -163,6 +206,8 @@ class SFTemporalDataset(torch.utils.data.Dataset):
             order = np.random.permutation(len(sequences))
             sequences = sequences[order]
             seq_targets = seq_targets[order]
+
+        sequences, seq_targets = self.__subset_sequences__(sequences, seq_targets)
 
         self.data_full = sequences
         self.targets_full = seq_targets

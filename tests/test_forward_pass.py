@@ -15,6 +15,9 @@ import torch
 from sit_fuse_rtrbm.temporal.rtrbm import RTRBM
 from sit_fuse_rtrbm.datasets.sf_temporal_dataset import SFTemporalDataset
 
+import logging
+logging.disable(logging.CRITICAL)
+
 
 def build_toy_dataset(n_timesteps=30, n_features=8, seq_len=10):
     """
@@ -28,7 +31,8 @@ def build_toy_dataset(n_timesteps=30, n_features=8, seq_len=10):
     for f in range(n_features):
         freq = rng.uniform(0.5, 2.0)
         phase = rng.uniform(0, np.pi)
-        data[:, f] = np.sin(freq * t + phase) + 0.05 * rng.standard_normal(n_timesteps)
+        data[:, f] = np.sin(freq * t + phase) + 0.05 * \
+            rng.standard_normal(n_timesteps)
 
     targets = np.arange(n_timesteps)
 

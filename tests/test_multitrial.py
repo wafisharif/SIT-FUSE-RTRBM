@@ -9,6 +9,9 @@ import os
 
 from sit_fuse_rtrbm.datasets.sf_temporal_dataset import SFTemporalDataset
 
+import logging
+logging.disable(logging.CRITICAL)
+
 
 def test_single_trial_path_unchanged():
     """Regression check: the original single-array path must still work

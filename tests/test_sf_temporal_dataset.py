@@ -5,6 +5,9 @@ import numpy as np
 
 from sit_fuse_rtrbm.datasets.sf_temporal_dataset import SFTemporalDataset
 
+import logging
+logging.disable(logging.CRITICAL)
+
 
 def test_sequence_count_and_shape():
     n_timesteps, n_features, seq_len = 20, 5, 4

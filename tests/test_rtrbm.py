@@ -6,6 +6,9 @@ import torch
 
 from sit_fuse_rtrbm.temporal.rtrbm import RTRBM
 
+import logging
+logging.disable(logging.CRITICAL)
+
 
 def test_hidden_sampling_output_shape():
     batch_size, n_visible, n_hidden = 8, 10, 6
