@@ -259,6 +259,73 @@ class RTRBM(RBM):
 
         return mse
 
+    def fit_subseries(self, sequence: torch.Tensor) -> torch.Tensor:
+        """Trains on ONE subseries (a short chunk of consecutive
+        timesteps), using independent CD-k per timestep for the cost
+        computation, but accumulating cost ACROSS THE WHOLE SUBSERIES
+        before a SINGLE backward() + optimizer step.
+
+        This is the actual BPTT mechanism: h_prev is carried forward
+        WITHOUT detaching between timesteps, so gradients from later
+        timesteps' cost can flow backward through the h_prev chain into
+        earlier timesteps' contribution to W_prime and h0. This matches
+        Nick's decision (2026-06-29): train on subseries (not full long
+        sequences), independent CD-k per timestep for the W/a/b
+        contribution, per the original paper.
+
+        Contrast with cd_step(): that method does zero_grad/backward/step
+        on EVERY call, which is correct for testing one timestep in total
+        isolation, but WRONG for chained training -- it would correct the
+        model after every single frame and never let gradients flow
+        across the chain at all. This method is the one to actually use
+        for subseries training.
+
+        Args:
+            sequence: ONE subseries, shape (batch, seq_len, n_visible).
+
+        Returns:
+            mse -- summed reconstruction error across all timesteps in
+            the subseries (a single scalar, already detached).
+        """
+        batch_size, seq_len, n_visible = sequence.shape
+
+        h_prev = self.h0.unsqueeze(0).expand(batch_size, -1)
+
+        self.optimizer.zero_grad()
+
+        total_cost = torch.tensor(0.0)
+        total_mse = torch.tensor(0.0)
+
+        for t in range(seq_len):
+            v_t = sequence[:, t, :]
+
+            _, _, _, _, visible_states = self.gibbs_sampling(v_t, h_prev)
+            visible_states = visible_states.detach()
+
+            cost_t = torch.mean(self.energy(v_t, h_prev)) - torch.mean(
+                self.energy(visible_states, h_prev)
+            )
+            total_cost = total_cost + cost_t
+
+            batch_mse = torch.div(
+                torch.sum(torch.pow(v_t - visible_states, 2)), batch_size
+            ).detach()
+            total_mse = total_mse + batch_mse
+
+            # CRITICAL: do NOT detach here. h_prev for the NEXT timestep
+            # must stay attached to the computation graph, or gradients
+            # from this timestep onward could never flow back to W_prime/
+            # h0's contribution at EARLIER timesteps -- which would
+            # silently turn this into "independent CD-k with no real BPTT
+            # at all," defeating the entire point of this method vs.
+            # cd_step().
+            h_prev, _ = self.hidden_sampling(v_t, h_prev)
+
+        total_cost.backward()
+        self.optimizer.step()
+
+        return total_mse
+
     def fit(self, dataset, batch_size: int = 128, epochs: int = 10):
         """
         TODO -- NOT YET IMPLEMENTED.
