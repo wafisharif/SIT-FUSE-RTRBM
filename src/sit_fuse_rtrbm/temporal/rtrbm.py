@@ -126,6 +126,139 @@ class RTRBM(RBM):
 
         return probs, states
 
+    def energy(self, samples: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
+        """Calculates and frees the system's energy, ACCOUNTING FOR the
+        recurrent bias term.
+
+        Overrides RBM.energy (learnergy's rbm.py). NECESSARY override, not
+        optional: the parent class's energy() uses only the plain bias
+        `self.b`, which would silently ignore the recurrent contribution
+        `W_prime @ h_prev` that hidden_sampling actually uses. If left
+        un-overridden, the energy used to compute the CD-k training cost
+        would not match the distribution actually being sampled from --
+        meaning W_prime's gradient signal would be wrong/missing during
+        training, even though hidden_sampling itself works correctly.
+
+        Args:
+            samples: Samples to be energy-freed, shape (batch, n_visible).
+            h_prev: Same previous-timestep hidden probabilities used in
+                hidden_sampling for this timestep, shape (batch, n_hidden).
+
+        Returns:
+            The system's energy based on input samples, shape (batch,).
+        """
+        recurrent_bias = F.linear(h_prev, self.W_prime, self.b)
+        activations = F.linear(samples, self.W.t()) + recurrent_bias
+
+        s = nn.Softplus()
+        h = torch.sum(s(activations), dim=1)
+        v = torch.mv(samples, self.a)
+
+        energy = -v - h
+
+        return energy
+
+    def gibbs_sampling(
+        self, v: torch.Tensor, h_prev: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Performs the whole Gibbs sampling procedure FOR ONE TIMESTEP.
+
+        Overrides RBM.gibbs_sampling (learnergy's rbm.py) to thread h_prev
+        through every hidden_sampling call. IMPORTANT: h_prev stays FIXED
+        across all CD-k steps within this call -- it is the recurrent
+        context for THIS timestep only, not something that changes during
+        the k Gibbs-sampling bounces. (The recurrence across TIMESTEPS
+        happens one level up, in the training loop that calls this
+        function once per timestep with an updated h_prev each time --
+        not implemented yet, see fit() below.)
+
+        This matches "independent CD-k per timestep" as decided with Nick
+        (2026-06-29): each timestep runs its own self-contained CD-k, with
+        the only cross-timestep influence being the fixed h_prev bias.
+
+        Args:
+            v: Visible layer tensor for the CURRENT timestep.
+            h_prev: Previous timestep's hidden probabilities (fixed for
+                the duration of this call).
+
+        Returns:
+            Same 5-tuple as RBM.gibbs_sampling: positive hidden
+            probs/states, negative hidden probs/states, negative visible
+            states.
+        """
+        pos_hidden_probs, pos_hidden_states = self.hidden_sampling(v, h_prev)
+        neg_hidden_states = pos_hidden_states
+
+        for _ in range(self.steps):
+            _, visible_states = self.visible_sampling(neg_hidden_states, True)
+            neg_hidden_probs, neg_hidden_states = self.hidden_sampling(
+                visible_states, h_prev, True
+            )
+
+        return (
+            pos_hidden_probs,
+            pos_hidden_states,
+            neg_hidden_probs,
+            neg_hidden_states,
+            visible_states,
+        )
+
+    def cd_step(self, v: torch.Tensor, h_prev: torch.Tensor) -> torch.Tensor:
+        """Performs ONE Contrastive Divergence training step, for ONE
+        timestep's worth of data. This is the basic building block that
+        fit() will eventually loop over -- one frame, one CD-k update.
+
+        Mirrors the inner-loop body of RBM.fit() (learnergy's rbm.py)
+        almost exactly -- positive phase -> Gibbs sampling -> cost ->
+        backward -> optimizer step -- just using THIS class's
+        gibbs_sampling/energy (which both take h_prev) instead of the
+        parent's.
+
+        NOTE on pseudo_likelihood: RBM.fit() also tracks log-PL via
+        self.pseudo_likelihood(), but that inherited method internally
+        calls self.energy(samples) with the PARENT's one-argument
+        signature -- incompatible with RTRBM's energy(samples, h_prev).
+        This is consistent with the Technical Design Note's existing
+        deferral of pseudo_likelihood for this model. Not computed here;
+        only MSE is tracked for now.
+
+        NOTE: this does NOT zero/step the optimizer's gradient
+        accumulation across multiple calls in a sequence -- that
+        coordination (zero_grad once per subseries, not once per
+        timestep, so gradients accumulate correctly across the whole
+        chain for BPTT) belongs in fit()'s outer loop, not here. Calling
+        this method standalone (as the smoke test below does) performs
+        zero_grad/step every call, which is correct ONLY for testing a
+        single isolated timestep in isolation -- not for real subseries
+        training.
+
+        Args:
+            v: Visible layer tensor for this timestep, shape
+                (batch, n_visible).
+            h_prev: Previous timestep's hidden probabilities, shape
+                (batch, n_hidden).
+
+        Returns:
+            mse -- reconstruction error for this one step.
+        """
+        _, _, _, _, visible_states = self.gibbs_sampling(v, h_prev)
+        visible_states = visible_states.detach()
+
+        cost = torch.mean(self.energy(v, h_prev)) - torch.mean(
+            self.energy(visible_states, h_prev)
+        )
+
+        self.optimizer.zero_grad()
+        cost.backward()
+        self.optimizer.step()
+
+        batch_size = v.size(0)
+        mse = torch.div(
+            torch.sum(torch.pow(v - visible_states, 2)), batch_size
+        ).detach()
+
+        return mse
+
     def fit(self, dataset, batch_size: int = 128, epochs: int = 10):
         """
         TODO -- NOT YET IMPLEMENTED.
