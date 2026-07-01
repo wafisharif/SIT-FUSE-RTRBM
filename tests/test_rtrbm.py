@@ -2,10 +2,8 @@
 Smoke test for RTRBM.hidden_sampling, run against the REAL installed
 learnergy package (not stand-ins), via the sit_fuse_rtrbm dev package.
 """
-import torch
-
 from sit_fuse_rtrbm.temporal.rtrbm import RTRBM
-
+import torch
 import logging
 logging.disable(logging.CRITICAL)
 
@@ -63,13 +61,22 @@ def test_h_prev_actually_changes_output():
     print("h_prev actually influences output: PASS")
 
 
-def test_fit_raises_not_implemented():
+def test_fit_is_now_implemented():
+    """fit() must NOT raise NotImplementedError -- it is implemented now."""
+    import numpy as np
+    from sit_fuse_rtrbm.datasets.sf_temporal_dataset import SFTemporalDataset
+
+    data = np.random.rand(20, 10).astype(np.float32)
+    targets = np.arange(20)
+    ds = SFTemporalDataset()
+    ds.init_from_array(data, targets, seq_len=4, do_shuffle=False)
+
     model = RTRBM(n_visible=10, n_hidden=6)
     try:
-        model.fit(None)  # type: ignore
-        raise AssertionError("Expected NotImplementedError, but fit() ran.")
+        model.fit(ds, batch_size=4, epochs=1)
+        print("fit() is implemented and runs cleanly: PASS")
     except NotImplementedError:
-        print("fit() correctly raises NotImplementedError: PASS")
+        raise AssertionError("fit() still raises NotImplementedError")
 
 
 def test_inherits_real_learnergy_rbm():
@@ -89,6 +96,6 @@ if __name__ == "__main__":
     test_hidden_sampling_output_shape()
     test_recurrent_gradient_flows_through_W_prime()
     test_h_prev_actually_changes_output()
-    test_fit_raises_not_implemented()
+    test_fit_is_now_implemented()
     test_inherits_real_learnergy_rbm()
     print("\nAll RTRBM smoke tests passed (against real installed learnergy).")

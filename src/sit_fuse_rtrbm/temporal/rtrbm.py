@@ -326,27 +326,66 @@ class RTRBM(RBM):
 
         return total_mse
 
-    def fit(self, dataset, batch_size: int = 128, epochs: int = 10):
+    def fit(
+        self,
+        dataset: torch.utils.data.Dataset,
+        batch_size: int = 128,
+        epochs: int = 10,
+    ) -> torch.Tensor:
+        """Fits a new RTRBM model on a dataset of subseries sequences.
+
+        Outer training loop wrapping fit_subseries() -- mirrors RBM.fit()
+        (learnergy's rbm.py) in structure: DataLoader -> epoch loop ->
+        batch loop -> per-epoch self.dump() for history tracking.
+
+        Key differences from RBM.fit():
+        - Each "sample" is a SEQUENCE of shape (seq_len, n_visible), not
+          a flat (n_visible,) vector. DataLoader returns batches of shape
+          (batch, seq_len, n_visible) -- no reshaping needed.
+        - Inner training step is fit_subseries(), not a single CD-k call.
+        - Returns only mse (not (mse, pl)) since pseudo_likelihood is
+          deferred for this model (see cd_step() docstring).
+
+        Args:
+            dataset: A SFTemporalDataset (or compatible Dataset) where
+                each sample is a sequence of shape (seq_len, n_visible).
+            batch_size: Number of sequences per batch.
+            epochs: Number of full passes through the dataset.
+
+        Returns:
+            mse from the final epoch.
         """
-        TODO -- NOT YET IMPLEMENTED.
+        import time
+        from torch.utils.data import DataLoader
+        from tqdm import tqdm
 
-        OPEN QUESTION FOR NICK: training an RTRBM requires propagating the
-        mean-field hidden probabilities forward through a whole sequence
-        (backprop-through-time, BPTT) for the W_prime/h0 gradients, while
-        still using CD-k (per RBM.fit in learnergy's rbm.py) for the
-        W/a/b gradients at each individual timestep.
-
-        We have NOT decided yet:
-          1. Full BPTT through the whole sequence vs. truncated BPTT vs.
-             treating each timestep's CD-k update as independent.
-          2. Whether to reuse RBM.fit's batching loop structure, or write a
-             sequence-level loop since each "batch" is now a batch of
-             SEQUENCES, not independent rows.
-
-        Leaving unimplemented until discussed with Nick.
-        """
-        raise NotImplementedError(
-            "RTRBM.fit: training strategy (BPTT depth, CD-k integration) "
-            "is an open design question -- confirm with Nick before "
-            "implementing."
+        batches = DataLoader(
+            dataset, batch_size=batch_size, shuffle=True, num_workers=0
         )
+
+        mse = torch.tensor(0.0)
+
+        for epoch in range(epochs):
+            logger.info("Epoch %d/%d", epoch + 1, epochs)
+
+            start = time.time()
+            mse = torch.tensor(0.0)
+
+            for samples, _ in tqdm(batches):
+                # samples shape: (batch, seq_len, n_visible)
+                # No reshape needed -- fit_subseries expects this shape.
+                if self.device == "cuda":
+                    samples = samples.cuda()
+
+                batch_mse = self.fit_subseries(samples)
+                mse += batch_mse
+
+            mse /= len(batches)
+
+            end = time.time()
+
+            self.dump(mse=mse.item(), time=end - start)
+
+            logger.info("MSE: %f", mse)
+
+        return mse
