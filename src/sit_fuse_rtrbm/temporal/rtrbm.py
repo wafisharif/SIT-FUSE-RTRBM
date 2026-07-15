@@ -489,3 +489,42 @@ class RTRBM(RBM):
         logger.info("MSE: %f", mse)
 
         return mse, torch.cat(visible_probs_all, dim=0)
+
+    def sample(self, n_samples: int = 1, n_steps: int = 10) -> torch.Tensor:
+        """Generates new sequences from scratch using the model's learned
+        parameters, following the RTRBM sampling procedure from
+        Sutskever, Hinton & Taylor (NeurIPS 2008):
+
+        1. Start with learned initial hidden state h0.
+        2. At each timestep t:
+           a. Sample visible vector v_t ~ P(v | h_{t-1}) via visible_sampling
+           b. Sample hidden state h_t ~ P(h | v_t, h_{t-1}) via hidden_sampling
+           c. Carry mean-field hidden probabilities (not sampled states)
+              forward as h_prev -- same convention as fit() and reconstruct().
+        3. Collect all sampled visible vectors into a sequence.
+
+        No existing learnergy class has a sample() method -- this follows
+        directly from the paper's formulation.
+
+        Args:
+            n_samples: Number of independent sequences to generate.
+            n_steps: Length of each generated sequence (timesteps).
+
+        Returns:
+            Generated visible sequences, shape (n_samples, n_steps, n_visible).
+        """
+        h_prev = self.h0.unsqueeze(0).expand(n_samples, -1).detach()
+
+        all_visible = []
+
+        with torch.no_grad():
+            for t in range(n_steps):
+                visible_probs, visible_states = self.visible_sampling(h_prev)
+                all_visible.append(visible_states.unsqueeze(1))
+
+                hidden_probs, hidden_states = self.hidden_sampling(
+                    visible_states, h_prev
+                )
+                h_prev = hidden_probs
+
+        return torch.cat(all_visible, dim=1)
