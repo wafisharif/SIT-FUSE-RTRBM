@@ -389,3 +389,103 @@ class RTRBM(RBM):
             logger.info("MSE: %f", mse)
 
         return mse
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Performs a forward pass over the data.
+
+        Overrides RBM.forward (learnergy's rbm.py) to handle temporal
+        sequences. Runs hidden_sampling across every timestep, carrying
+        h_prev forward exactly as during training in fit_subseries().
+
+        Args:
+            x: Input tensor of shape (batch, seq_len, n_visible).
+
+        Returns:
+            Hidden probability sequence of shape (batch, seq_len, n_hidden).
+        """
+        batch_size, seq_len, n_visible = x.shape
+
+        h_prev = self.h0.unsqueeze(0).expand(batch_size, -1)
+
+        all_probs = []
+        for t in range(seq_len):
+            v_t = x[:, t, :]
+            probs, _ = self.hidden_sampling(v_t, h_prev)
+            all_probs.append(probs.unsqueeze(1))
+            h_prev = probs
+
+        return torch.cat(all_probs, dim=1)
+
+    def reconstruct(
+        self, dataset: torch.utils.data.Dataset
+    ) -> Tuple[float, torch.Tensor]:
+        """Reconstructs batches of new samples.
+
+        Overrides RBM.reconstruct (learnergy's rbm.py). Mirrors its
+        structure exactly -- DataLoader, tqdm, MSE, return (mse,
+        visible_probs) -- adapted for temporal sequences: encodes each
+        timestep to hidden probabilities carrying h_prev forward, then
+        decodes back to visible via visible_sampling.
+
+        Args:
+            dataset: A SFTemporalDataset where each sample is a sequence
+                of shape (seq_len, n_visible).
+
+        Returns:
+            Reconstruction error (MSE) and visible probabilities tensor
+            of shape (batch, seq_len, n_visible).
+        """
+        from torch.utils.data import DataLoader
+        from tqdm import tqdm
+        logger.info("Reconstructing new samples ...")
+
+        mse = torch.tensor(0.0)
+        batch_size = len(dataset)
+
+        batches = DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, num_workers=0
+        )
+
+        visible_probs_all = []
+
+        for samples, _ in tqdm(batches):
+            if self.device == "cuda":
+                samples = samples.cuda()
+
+            batch_size_actual = samples.size(0)
+            seq_len = samples.size(1)
+
+            h_prev = self.h0.unsqueeze(0).expand(batch_size_actual, -1)
+
+            recon_probs = []
+            recon_states = []
+
+            for t in range(seq_len):
+                v_t = samples[:, t, :]
+
+                pos_hidden_probs, pos_hidden_states = self.hidden_sampling(
+                    v_t, h_prev
+                )
+                visible_prob, visible_state = self.visible_sampling(
+                    pos_hidden_states
+                )
+
+                recon_probs.append(visible_prob.unsqueeze(1))
+                recon_states.append(visible_state.unsqueeze(1))
+                h_prev = pos_hidden_probs
+
+            recon_probs_seq = torch.cat(recon_probs, dim=1)
+            recon_states_seq = torch.cat(recon_states, dim=1)
+
+            batch_mse = torch.div(
+                torch.sum(torch.pow(samples - recon_states_seq, 2)),
+                batch_size_actual
+            )
+            mse += batch_mse
+            visible_probs_all.append(recon_probs_seq)
+
+        mse /= len(batches)
+
+        logger.info("MSE: %f", mse)
+
+        return mse, torch.cat(visible_probs_all, dim=0)
