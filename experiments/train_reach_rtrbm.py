@@ -109,6 +109,9 @@ print(f"\nFinal train MSE: {train_mse_history[-1]:.4f}")
 # ── Reconstruct on val split ──────────────────────────────────────────────────
 print("\nReconstructing on validation split...")
 val_mse, val_probs = model.reconstruct(val_ds)
+# Save val probs and MSE history for Gaussian comparison plot
+np.save(os.path.join(OUT_DIR, "val_probs.npy"), val_probs.detach().numpy())
+np.save(os.path.join(OUT_DIR, "mse_history.npy"), np.array(train_mse_history))
 print(f"Val reconstruction MSE: {val_mse:.4f}")
 
 # ── Plot 1: Training MSE over epochs ─────────────────────────────────────────
