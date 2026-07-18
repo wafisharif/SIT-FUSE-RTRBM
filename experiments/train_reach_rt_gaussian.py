@@ -149,10 +149,15 @@ fig.suptitle("Real vs Reconstructed — RTGaussianRBM (val split)\n"
 
 for seq_idx in range(N_TO_PLOT):
     real_seq, _ = val_ds[seq_idx]
+    # Normalize real_seq to match what model sees during reconstruction
+    real_flat = real_seq.reshape(-1, N_VISIBLE)
+    real_norm = (real_flat - real_flat.mean(axis=0, keepdims=True)
+                 ) / (real_flat.std(axis=0, keepdims=True) + 1e-6)
+    real_seq_plot = real_norm.reshape(SEQ_LEN, N_VISIBLE)
     recon = val_probs[seq_idx].detach().numpy()
     for feat_idx in range(N_FEAT_SHOW):
         ax = axes[seq_idx, feat_idx]
-        ax.plot(real_seq[:, feat_idx], color="steelblue",
+        ax.plot(real_seq_plot[:, feat_idx], color="steelblue",
                 label="real" if feat_idx == 0 else "")
         ax.plot(recon[:, feat_idx], color="darkorange",
                 linestyle="--", label="recon" if feat_idx == 0 else "")
@@ -182,7 +187,7 @@ if os.path.exists(bern_probs_path):
     for row_idx, (title, recon) in enumerate(rows):
         for feat_idx in range(N_FEAT_SHOW):
             ax = axes[row_idx, feat_idx]
-            ax.plot(real_seq[:, feat_idx], color="steelblue",
+            ax.plot(real_seq_plot[:, feat_idx], color="steelblue",
                     label="real" if feat_idx == 0 else "")
             ax.plot(recon[:, feat_idx], color="darkorange",
                     linestyle="--", label="recon" if feat_idx == 0 else "")
