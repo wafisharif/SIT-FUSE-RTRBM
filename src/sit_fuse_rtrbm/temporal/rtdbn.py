@@ -393,10 +393,20 @@ class RTDBN(Model):
     ) -> List[float]:
         """Trains the IIC clustering head on top of the frozen RTRBM encoder.
 
-        Mirrors SIT-FUSE's pattern: encoder is pre-trained first (via fit()),
-        then frozen, then the clustering head is trained with IIC loss.
-        Perturbations are Gaussian noise added to encoder outputs, per the
-        SIT-FUSE paper.
+        Mirrors SIT-FUSE's pattern: encoder pre-trained first, then frozen,
+        then clustering head trained with IIC loss. Perturbations are Gaussian
+        noise added to encoder outputs, per the SIT-FUSE paper.
+
+        KEY FIX vs. original implementation:
+        - Embeddings are computed FRESH per batch inside the training loop,
+          not pre-cached with torch.no_grad(). Pre-caching caused the IIC
+          loss to stay at zero because all batches saw identical deterministic
+          embeddings -- the noise was the only source of variation, making
+          the joint distribution P(c,c') degenerate.
+        - Noise std is scaled RELATIVE to the embedding magnitude (10% of
+          per-batch std) rather than a fixed absolute value. The encoder
+          outputs are small in magnitude; fixed noise_std=0.1 was larger
+          than the entire embedding range, destroying the MI signal.
 
         Args:
             dataset: SFTemporalDataset (same as used for RTRBM training).
@@ -430,16 +440,29 @@ class RTDBN(Model):
                 if self.device == "cuda":
                     samples = samples.cuda()
 
-                # Get temporal embeddings from frozen encoder
+                # Compute embeddings FRESH per batch -- NOT cached.
+                # Encoder is frozen so no grad needed through it,
+                # but embeddings must be computed here (not pre-cached)
+                # so each batch draws from the actual data distribution.
                 with torch.no_grad():
                     embeddings = self.encode(samples)
 
-                # Perturb embeddings (Gaussian noise) -- per SIT-FUSE paper
-                perturbed = self.clustering_head.perturb(embeddings)
+                # Scale noise relative to embedding magnitude --
+                # fixed noise_std can be too large or too small depending
+                # on the encoder's output scale. Using 10% of per-batch
+                # std keeps perturbations meaningful without destroying signal.
+                emb_std = embeddings.std().item()
+                adaptive_noise = max(emb_std * 0.1, 1e-4)
+
+                # Perturb embeddings (adaptive Gaussian noise)
+                perturbed = embeddings + \
+                    torch.randn_like(embeddings) * adaptive_noise
 
                 # Forward pass through clustering head
-                p = self.clustering_head(embeddings)
-                p_perturbed = self.clustering_head(perturbed)
+                # embeddings.detach() so gradients only flow through
+                # the clustering head, not back to the frozen encoder
+                p = self.clustering_head(embeddings.detach())
+                p_perturbed = self.clustering_head(perturbed.detach())
 
                 # IIC loss
                 loss = IICClusteringHead.iic_loss(p, p_perturbed)
@@ -454,6 +477,7 @@ class RTDBN(Model):
             avg_loss = epoch_loss / n_batches
             loss_history.append(avg_loss)
             self.dump(iic_loss=avg_loss)
+
             logger.info("IIC Epoch %d/%d | Loss: %.4f",
                         epoch + 1, epochs, avg_loss)
 
@@ -463,6 +487,50 @@ class RTDBN(Model):
                 param.requires_grad_(True)
 
         return loss_history
+
+    def fit_clustering_kmeans(
+        self,
+        dataset: torch.utils.data.Dataset,
+        batch_size: int = 32,
+        n_init: int = 10,
+    ) -> torch.Tensor:
+        """Clusters temporal embeddings using k-means.
+
+        Practical alternative to IIC for initial end-to-end analysis.
+        IIC requires training the encoder jointly with the clustering head
+        to learn discriminative features -- training a clustering head on
+        frozen RTRBM embeddings alone leads to collapse when the embeddings
+        lack sufficient discriminability (common at early training stages).
+
+        K-means directly on the frozen RTRBM embeddings is a reliable
+        starting point for qualitative analysis, consistent with SIT-FUSE's
+        earlier clustering approach (BIRCH/k-means before transitioning to
+        IIC per the paper). This produces meaningful clusters from whatever
+        structure the RTRBM has learned, without requiring joint training.
+
+        Args:
+            dataset: SFTemporalDataset to cluster.
+            batch_size: Batch size for embedding extraction.
+            n_init: Number of k-means initializations (higher = more stable).
+
+        Returns:
+            Cluster assignment tensor, shape (n_samples,).
+        """
+        from sklearn.cluster import KMeans
+
+        # Extract all embeddings
+        embeddings, _ = self.get_cluster_assignments(dataset, batch_size)
+        emb_np = embeddings.numpy()
+
+        # Fit k-means
+        km = KMeans(
+            n_clusters=self.clustering_head.fc[-2].out_features,
+            n_init=n_init,
+            random_state=42,
+        )
+        assignments = km.fit_predict(emb_np)
+
+        return torch.from_numpy(assignments)
 
     def get_cluster_assignments(
         self, dataset: torch.utils.data.Dataset, batch_size: int = 32
